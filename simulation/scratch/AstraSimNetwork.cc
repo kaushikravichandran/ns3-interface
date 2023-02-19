@@ -1,5 +1,5 @@
 #include "ns3/AstraNetworkAPI.hh"
-#include<iostream>
+#include <iostream>
 #include <stdio.h>
 #include <execinfo.h>
 #include <queue>
@@ -16,10 +16,39 @@
 #include "ns3/csma-module.h"
 #include "ns3/Sys.hh"
 
+
+
 using namespace std;
 using namespace ns3;
 
-std::vector<int> physical_dims{8,16};
+//#define original
+#define case_1
+
+
+/***
+#ifdef original
+std::vector<string> workloads {
+  "microAllReduce.txt",
+  "microAllToAll.txt"
+};
+std::vector<std::vector<int>> physical_dims {
+  { 8, 4 },
+  { 8, 4 }
+};
+#endif
+
+#ifdef case_1
+***/
+std::vector<string> workloads {
+  //"microAllReduce.txt"
+  "val_1_1gb_allreduce.txt"
+};
+std::vector<std::vector<int>> physical_dims {
+  { 8 }
+};
+//#endif
+
+
 queue<struct task1> workerQueue;
 unsigned long long tempcnt = 999;
 unsigned long long  cnt = 0;
@@ -33,10 +62,12 @@ struct sim_event {
 };
 Ptr<SimpleUdpApplication> *udp;
 class ASTRASimNetwork:public AstraSim::AstraNetworkAPI{
-
+    private:
+      int npu_offset;
     public:
         queue<sim_event> sim_event_queue;
-        ASTRASimNetwork(int rank):AstraNetworkAPI(rank){
+        ASTRASimNetwork(int rank,int npu_offset):AstraNetworkAPI(rank){
+            this->npu_offset=npu_offset;
         }
         ~ASTRASimNetwork(){}
         int sim_comm_size(AstraSim::sim_comm comm, int* size){
@@ -52,6 +83,7 @@ class ASTRASimNetwork:public AstraSim::AstraNetworkAPI{
                     cout<<"All data received by node "<<p.first<<" is "<<it->second<<"\n";
                 }
             }
+	    exit(0);
             return 0;
         }
         double sim_time_resolution(){
@@ -86,9 +118,10 @@ class ASTRASimNetwork:public AstraSim::AstraNetworkAPI{
             AstraSim::sim_request* request,//not yet used 
             void (*msg_handler)(void* fun_arg),
             void* fun_arg){
-                if(rank==0 && dst == 1 && cnt == 0){
-                    cout<<"starting new collective \n";
-                }
+               dst+=npu_offset;
+		//if(rank==0 && dst == 1 && cnt == 0){
+		//	cout<<“rank 0 and destination 1 sim_send test\n”;
+		//}
                 task1 t;
                 t.src = rank;
                 t.dest = dst;
@@ -96,7 +129,7 @@ class ASTRASimNetwork:public AstraSim::AstraNetworkAPI{
                 t.type = 0;
                 t.fun_arg = fun_arg;
                 t.msg_handler = msg_handler;
-		        sentHash[make_pair(tag,make_pair(t.src,t.dest))] = t;
+		sentHash[make_pair(tag,make_pair(t.src,t.dest))] = t;
                 SendFlow(rank, dst , count, msg_handler, fun_arg,tag);
                 return 0;
             }
@@ -109,33 +142,33 @@ class ASTRASimNetwork:public AstraSim::AstraNetworkAPI{
             AstraSim::sim_request* request,
             void (*msg_handler)(void* fun_arg),
             void* fun_arg){
+                src+=npu_offset;
                 task1 t;
                 t.src = src;
-                t.dest = rank;
+                t.dest = rank; 
                 t.count = count; 
                 t.type = 1;
                 t.fun_arg = fun_arg;
                 t.msg_handler = msg_handler;
                 if(recvHash.find(make_pair(tag,make_pair(t.src,t.dest)))!=recvHash.end()){
                     int count = recvHash[make_pair(tag,make_pair(t.src,t.dest))];
-                    if(count == t.count)
-                    {
+                    if(count == t.count) {
                         recvHash.erase(make_pair(tag,make_pair(t.src,t.dest)));
                         t.msg_handler(t.fun_arg);
                     }
-                    else if (count > t.count){
+                    else if (count > t.count) {
                         recvHash[make_pair(tag,make_pair(t.src,t.dest))] = count - t.count;
                         t.msg_handler(t.fun_arg);
                     }
-                    else{
+                    else {
                         recvHash.erase(make_pair(tag,make_pair(t.src,t.dest)));
                         t.count -= count;
                         expeRecvHash[make_pair(tag,make_pair(t.src,t.dest))] = t;
                     }
                 }
                 else{
-		            if(expeRecvHash.find(make_pair(tag,make_pair(t.src,t.dest)))==expeRecvHash.end()){
-                        expeRecvHash[make_pair(tag,make_pair(t.src,t.dest))] = t;;
+		    if(expeRecvHash.find(make_pair(tag,make_pair(t.src,t.dest)))==expeRecvHash.end()){
+                        expeRecvHash[make_pair(tag,make_pair(t.src,t.dest))] = t;
                     }
                     else{
                         int expecount = expeRecvHash[make_pair(tag,make_pair(t.src,t.dest))].count;
@@ -146,58 +179,81 @@ class ASTRASimNetwork:public AstraSim::AstraNetworkAPI{
                 return 0;
             }
         void  handleEvent(int dst,int cnt) {
+            //cout<<"event handled\n";
         }
 };
 
 int main (int argc, char *argv[]){
-    int num_gpus=1;
+    assert(workloads.size()==physical_dims.size());
+    int num_gpus=0;
     for(auto &a:physical_dims){
-        num_gpus*=a;
+      int job_npus=1;
+      for(auto &dim:a) {
+        job_npus *= dim;
+      }
+      num_gpus+=job_npus;
     }
-    std::string system_input;
-    if(physical_dims.size()==1){
-        system_input="sample_a2a_sys.txt";
-    }
-    else if(physical_dims.size()==2){
-        system_input="sample_2D_switch_sys.txt";
-    }
-    else if(physical_dims.size()==3){
-        system_input="sample_3D_switch_sys.txt";
-    }
+
     LogComponentEnable ("SimpleUdpApplication", LOG_LEVEL_INFO);
     LogComponentEnable("OnOffApplication", LOG_LEVEL_INFO);
     LogComponentEnable("PacketSink", LOG_LEVEL_INFO);
     std::vector<ASTRASimNetwork*> networks(num_gpus,nullptr);
     std::vector<AstraSim::Sys*> systems(num_gpus,nullptr);
-    std::vector<int> queues_per_dim(physical_dims.size(),1);
-    for(int i=0;i<num_gpus;i++){
-	networks[i]=new ASTRASimNetwork(i);	
-	systems[i] = new AstraSim::Sys(
-        	networks[i], // AstraNetworkAPI
-        	nullptr, // AstraMemoryAPI
-        	i, // id
-        	1, // num_passes
-        	physical_dims, // dimensions
-        	queues_per_dim, // queues per corresponding dimension
-        	"../astra-sim/inputs/system/"+system_input, // system configuration
-        	"../astra-sim/inputs/workload/microAllReduce.txt", //DLRM_HybridParallel.txt, // Resnet50_DataParallel.txt, // workload configuration
-        	256, // communication scale
-        	1, // computation scale
-        	1, // injection scale
-        	1,
-        	0, // total_stat_rows and stat_row
-        	"scratch/results/", // stat file path
-        	"test1", // run name
-        	true, // separate_log
-        	false  // randezvous protocol
-    	);	    
-    }	
-    main1(argc, argv);
-    for(int i=0;i<num_gpus;i++){
-	systems[i]->workload->fire();	
-    }
-    Simulator::Run ();
-    Simulator::Stop(Seconds (2000000000));
-    Simulator::Destroy();
-    return 0;
+
+    int npu_offset=0;
+    for(int i=0;i<physical_dims.size();i++){
+      std::vector<int> queues_per_dim(physical_dims[i].size(),1);
+      //determining the appropriate system input file
+      std::string system_input;
+      if(physical_dims[i].size()==1){
+        system_input="sample_1D_switch_sys.txt";
+      }
+      else if(physical_dims[i].size()==2){
+        system_input="sample_2D_switch_sys.txt";
+      }
+      else if(physical_dims[i].size()==3){
+        system_input="sample_3D_switch_sys.txt";
+      }
+      //initializing the net and sys layers
+      int job_npus=1;
+      for(auto dim:physical_dims[i]){
+        job_npus*=dim;
+      }
+      for(int j=0;j<job_npus;j++){
+        networks[j+npu_offset]=new ASTRASimNetwork(j+npu_offset,npu_offset);
+        systems[j+npu_offset] = new AstraSim::Sys(
+            networks[j+npu_offset], // AstraNetworkAPI
+            nullptr, // AstraMemoryAPI
+            j, // id
+            npu_offset, // npu ofsset in a multi-job scenario
+            1, // num_passes
+            physical_dims[i], // dimensions
+            queues_per_dim, // queues per corresponding dimension
+            "../../../../../astra-sim/inputs/system/"+system_input, // system configuration
+            "../../../../../astra-sim/inputs/workload/"+workloads[i], //DLRM_HybridParallel.txt, // Resnet50_DataParallel.txt, // workload configuration
+            1, // communication scale
+            1, // computation scale
+            1, // injection scale
+            1,
+            0, // total_stat_rows and stat_row
+            "scratch/results/", // stat file path
+            "test1", // run name
+            true, // separate_log
+            false  // randezvous protocol
+            );
+      }
+      npu_offset+=job_npus;
+  }
+  main1(argc, argv);
+  //pass number of nodes
+  for(int i=0;i<num_gpus;i++){
+      systems[i]->workload->fire();
+  }
+
+  Simulator::Run ();
+  //Simulator::Stop(TimeStep (0x7fffffffffffffffLL));
+  Simulator::Stop(Seconds (2000000000));
+  Simulator::Destroy();
+  return 0;
 }
+

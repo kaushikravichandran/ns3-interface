@@ -22,11 +22,12 @@ LICENSE file in the root directory of this source tree.
 #include "ns3/Common.hh"
 
 namespace AstraSim {
+class Sys;
 class BasicEventHandlerData : public CallData {
  public:
-  int nodeId;
+  Sys *node;
   EventType event;
-  BasicEventHandlerData(int nodeId, EventType event);
+  BasicEventHandlerData(Sys* node, EventType event);
 };
 } // namespace AstraSim
 #endif
